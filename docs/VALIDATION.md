@@ -1,3 +1,11 @@
+# v0.3.1-preview removals
+
+Removed the head-movement calibration UI, collection/validation flow, model transactions, and pose-range visibility gate. All finite predictions are returned by the estimator regardless of head pose. Normal handling for missing faces, blinks, non-finite predictions, and positions outside actual displays remains. Existing calibration files and appearance preferences are retained.
+
+20 automated tests pass, including a regression asserting finite output for a pose far outside the training samples. Updated UI passes headless Gamescope smoke. These are removal/regression checks, not evidence of improved gaze accuracy.
+
+The entries below describe historical versions and features removed in this release.
+
 # v0.3.0-preview head calibration
 
 Optional fixed-dot head turns (left/right/up/down) learn a provisional correction. A different target checks paired baseline/candidate predictions on separate frames. Acceptance requires direction coverage, measured movement, pose-range coverage, at least 10% and 3px aggregate improvement, no material per-direction axis regression, and preserved base-target fit. Rejection/cancellation restores the complete prior model and guard. Accepted raw calibration samples reproduce the fit after restart through deterministic per-target balancing.

@@ -25,7 +25,7 @@ NX Gaze estimates where you are looking and draws a smooth, click-through marker
 
 - **Calibrate across displays.** Follow five targets and one brief check per screen—about 7 seconds per screen when tracking is stable. Blinks or missed frames may extend this.
 - **Keep using your mouse.** The overlay passes clicks through to the application underneath.
-- **Conservative head handling.** Track camera-relative position, scale, and continuous orientation in one inference pass. Only enable head adjustments supported by movement while fixating the same target; hide estimates outside the calibrated pose range.
+- **Continuous overlay.** Finite estimates inside your displays are shown without a head-pose reliability gate.
 - **Filter blinks.** Hold the last position for up to 400 ms and skip blink/reopening samples. Lost face tracking hides the marker immediately.
 - **Tune the feel.** Choose colour, ring/dot/crosshair/diamond shape, 4–160 px radius, 10–100% opacity, and 0–2000 ms smoothing response. Appearance settings persist. Higher smoothing adds visible lag.
 - **Keep frames local.** Camera frames are processed on your machine, without recording or uploading them.
@@ -60,19 +60,7 @@ The first camera start downloads the MediaPipe face model if it is not already c
 3. Follow the additional check targets. The overlay starts automatically; adjust its appearance and smoothing.
 4. Recalibrate after moving the camera or changing your usual seating position.
 
-Existing v0.1 calibration profiles need a fresh quick calibration for the updated head features. Quick calibration remains available. For head-motion correction, use the optional Calibrate head movement step after gaze calibration.
-
-## Calibrate head movement
-
-After loading or completing gaze calibration, click **Calibrate head movement**. The dot appears on the display containing the control panel.
-
-1. Keep your **eyes on the fixed dot** while gently turning your head left, right, up, and down as prompted; return toward your usual posture after each turn.
-2. A second dot checks the candidate correction using separate movements. The app compares the old and new models on the same frames, before smoothing.
-3. The app applies and saves the candidate only if this local motion check improves by at least 10% and 3 logical pixels, without material axis regression, with enough motion/range coverage, and without materially worsening existing calibration targets. Otherwise it restores the previous model.
-
-Nominal duration: about **15 seconds**, plus training and extensions for blinks or missing frames. Escape cancels before the final commit. You can reuse your current v0.2 gaze calibration; the extra step is not required on every launch. Accepted samples stay local alongside the existing calibration.
-
-This checks one additional location on the selected display, not every screen position or arbitrary head movement. Repeating the step on another display may help cover a different viewing posture, but improvement is not guaranteed.
+Existing v0.1 calibration profiles need a fresh quick calibration for the updated head features. Quick calibration is the only calibration flow; there is no head-movement step. Existing saved samples are retained; run a fresh Quick calibration to replace previously accepted head-motion samples.
 
 ## Multiple screens
 

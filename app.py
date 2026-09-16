@@ -14,7 +14,7 @@ if sys.platform.startswith('linux') and os.environ.get('DISPLAY'):
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QRadialGradient, QShortcut, QKeySequence, QPolygonF
 from PyQt6.QtWidgets import QApplication, QWidget
-from core import Display, Smoother, signature, targets, visible_display, assess_motion
+from core import Display, Smoother, signature, targets, visible_display
 from ui import ControlPanel
 from head_tracking import FEATURE_SCHEMA
 
@@ -144,11 +144,6 @@ class Controller:
         self.cal_targets = []
         self.samples, self.labels = [], []
         self.pending_save = None
-        self.base_data = None
-        self.head_busy = False
-        self.head_candidate_pending = False
-        self.motion_rows = []
-        self.head_report = ""
         self.phase = None
         self.last_prediction = None
         self.validation_errors = []
@@ -159,7 +154,6 @@ class Controller:
         self.refresh_displays()
         self.panel.start_requested.connect(self.toggle_camera)
         self.panel.calibrate_requested.connect(self.calibrate)
-        self.panel.head_calibrate_requested.connect(self.calibrate_head)
         self.panel.pause_requested.connect(self.toggle_pause)
         self.panel.preview_requested.connect(self.set_preview)
         self.panel.camera_changed.connect(self.change_camera)
@@ -190,7 +184,6 @@ class Controller:
         self.panel.set_displays(signature(self.displays))
 
     def layout_changed(self, *args):
-        self.head_session_valid = False
         self.cancel_calibration()
         self.calibrated = False
         self.panel.set_calibrated(False)
@@ -233,11 +226,6 @@ class Controller:
         self.worker.preview_enabled = self.preview
         self.worker.sample.connect(self.sample)
         self.worker.prediction.connect(self.prediction)
-        self.worker.pose_state_changed.connect(self.pose_state)
-        self.worker.head_support_changed.connect(self.panel.set_head_support)
-        self.worker.comparison.connect(self.compare_motion)
-        self.worker.candidate_finished.connect(self.finish_head)
-        self.worker.candidate_retention.connect(self.retain_base)
         self.worker.ready.connect(self.ready)
         self.worker.trained.connect(self.trained)
         self.worker.failed.connect(self.failed)
@@ -261,7 +249,6 @@ class Controller:
                     x, y = data['features'].copy(), data['targets'].copy()
                     if x.ndim != 2 or y.shape != (len(x), 2) or len(x) < 9 or not np.isfinite(x).all() or not np.isfinite(y).all():
                         raise ValueError('Invalid calibration data')
-                self.base_data = (x, y)
                 self.waiting_training = self.worker.request_train(x, y)
                 self.panel.set_status('Restoring calibration', 'Use recalibration if your camera or seating position moved.')
             except Exception:
@@ -273,7 +260,6 @@ class Controller:
                 'device': str(device.resolve()), 'displays': signature(self.displays)}
 
     def stop_camera(self):
-        self.head_session_valid = False
         self.camera_ready = False
         self.cancel_calibration()
         self.hide_gaze()
@@ -284,8 +270,6 @@ class Controller:
             self.panel.set_status('Stopping camera', 'Releasing the webcam…')
 
     def stopped(self):
-        self.head_busy = False
-        self.head_candidate_pending = False
         self.worker = None
         self.camera_ready = False
         self.panel.set_running(False)
@@ -297,7 +281,6 @@ class Controller:
             self.panel.close()
 
     def failed(self, message):
-        self.head_session_valid = False
         self.cancel_calibration()
         self.calibrated = False
         self.panel.set_calibrated(False)
@@ -339,19 +322,10 @@ class Controller:
         self.blink_since = None
         self.blink_hold = False
         if self.phase and self.cal_targets and time.monotonic() - self.target_since >= SETTLE_SECONDS:
-            if self.phase in ('collect', 'head_collect'):
+            if self.phase == 'collect':
                 self.samples.append(features.copy())
                 self.labels.append(self.cal_targets[self.target_index][1:])
                 self.target_samples += 1
-            elif self.phase == 'head_validate':
-                self.motion_poses[self.target_index].append(features[-9:].copy())
-
-    def pose_state(self, supported):
-        if self.calibrated and not self.phase and not self.paused:
-            if supported:
-                self.panel.set_status('Tracking resumed', 'Head position is back within the calibrated range.')
-            else:
-                self.panel.set_status('Head moved beyond calibration', 'Move back toward your calibrated position. Unreliable gaze estimates are hidden.')
 
     def prediction(self, point):
         self.last_prediction = point
@@ -382,7 +356,7 @@ class Controller:
         if not self.worker or not self.camera_ready or self.worker.isInterruptionRequested():
             self.panel.set_status('Start the camera first', 'Then calibrate all screens.')
             return
-        if self.phase or self.waiting_training or self.head_busy:
+        if self.phase or self.waiting_training:
             return
         self.calibrated = False
         self.panel.set_calibrated(False)
@@ -396,60 +370,6 @@ class Controller:
         self.target_index = 0
         self.show_target()
 
-    def calibrate_head(self):
-        if not self.calibrated or not self.camera_ready or self.base_data is None or self.phase or self.head_busy:
-            self.panel.set_status('Calibrate gaze first', 'Start the camera and complete Quick calibration.')
-            return
-        self.head_busy = True
-        self.head_candidate_pending = False
-        self.head_report = ''
-        self.base_retained = True
-        self.motion_poses = [[], [], [], []]
-        self.head_session_valid = True
-        self.calibrated = False
-        self.panel.set_calibrated(False)
-        self.hide_gaze()
-        self.samples, self.labels = [], []
-        active_screen = self.panel.screen()
-        self.head_display = self.app.screens().index(active_screen)
-        point = self.displays[self.head_display].target(.5, .5)
-        self.cal_targets = [(self.head_display, *point)] * 4
-        self.cal_windows = [CalibrationWindow(s, self.cancel_calibration) for s in self.app.screens()]
-        self.phase = 'head_collect'
-        self.target_index = 0
-        self.show_target()
-
-    def retain_base(self, retained):
-        self.base_retained = retained
-
-    def compare_motion(self, before, after, supported):
-        if self.phase != 'head_validate' or time.monotonic() - self.target_since < SETTLE_SECONDS:
-            return
-        import math
-        target = self.cal_targets[self.target_index][1:]
-        if not all(math.isfinite(v) for v in (*before, *after)):
-            return
-        self.motion_rows.append((self.target_index, before[0]-target[0], before[1]-target[1],
-                                 after[0]-target[0], after[1]-target[1], supported))
-        self.target_samples += 1
-
-    def finish_head(self, accepted):
-        if not self.head_busy:
-            return
-        self.head_busy = False
-        self.head_candidate_pending = False
-        report = self.head_report
-        accepted = accepted and getattr(self, "head_session_valid", False)
-        if accepted:
-            self.save_calibration()
-        self.phase = None
-        self.cancel_calibration()
-        if self.worker and not self.worker.isInterruptionRequested() and self.camera_ready and getattr(self, "head_session_valid", False):
-            self.calibrated = True
-            self.panel.set_calibrated(True)
-            self.panel.set_status('Head correction applied' if accepted else 'Previous calibration restored',
-                                  (report or 'Head calibration cancelled.') + self.save_error)
-
     def show_target(self):
         self.target_since = time.monotonic()
         self.target_samples = 0
@@ -459,10 +379,6 @@ class Controller:
             window.target = (x, y) if i == active else None
             window.title = ('Look at the violet dot' if i == active else f'Look at display {active + 1}')
             window.subtitle = f'{"Check" if self.phase == "validate" else "Point"} {self.target_index+1} of {len(self.cal_targets)} · Keep your eyes on the dot; sit naturally'
-            if self.phase in ('head_collect', 'head_validate'):
-                direction = ['left', 'right', 'up', 'down'][self.target_index]
-                window.title = (f'Turn your head gently {direction}' if i == active else f'Look at display {active + 1}')
-                window.subtitle = f'{"Check" if self.phase == "head_validate" else "Learn"} {self.target_index+1}/4 · Keep your EYES on the dot. Turn slightly, then return.'
             window.show()
             window.update()
         self.cal_windows[active].activateWindow()
@@ -471,19 +387,18 @@ class Controller:
         now = time.monotonic()
         if now - self.last_sample > .35:
             self.hide_gaze()
-        if not self.phase or self.phase in ('training', 'head_training', 'head_finishing'):
+        if not self.phase or self.phase == 'training':
             return
         elapsed = now - self.target_since
-        count = self.target_samples if self.phase in ('collect', 'head_collect', 'head_validate') else len(self.target_errors)
-        capture_duration = 1.55 if self.phase == 'head_collect' else .95 if self.phase == 'head_validate' else CAPTURE_SECONDS
+        count = self.target_samples if self.phase == 'collect' else len(self.target_errors)
         for window in self.cal_windows:
-            window.progress = min(1, max(0, elapsed - SETTLE_SECONDS) / capture_duration)
+            window.progress = min(1, max(0, elapsed - SETTLE_SECONDS) / CAPTURE_SECONDS)
             window.update()
         if elapsed > 12:
             self.cancel_calibration()
             self.panel.set_status('Could not track this target', 'Improve lighting or camera angle, then try again.')
             return
-        if elapsed < SETTLE_SECONDS + capture_duration or count < MIN_TARGET_SAMPLES:
+        if elapsed < SETTLE_SECONDS + CAPTURE_SECONDS or count < MIN_TARGET_SAMPLES:
             return
         if self.phase == 'validate':
             import statistics
@@ -491,35 +406,6 @@ class Controller:
         self.target_index += 1
         if self.target_index < len(self.cal_targets):
             self.show_target()
-        elif self.phase == 'head_collect':
-            import numpy as np
-            self.phase = 'head_training'
-            for window in self.cal_windows:
-                window.hide()
-            x = np.vstack([self.base_data[0], self.samples])
-            y = np.vstack([self.base_data[1], self.labels])
-            self.pending_save = (x, y)
-            self.head_candidate_pending = True
-            self.waiting_training = self.worker.request_train(x, y, candidate=True, baseline=self.base_data)
-            self.panel.set_status('Learning head correction', 'Next: check different movements against the previous model.')
-        elif self.phase == 'head_validate':
-            import numpy as np
-            accepted, self.head_report = assess_motion(self.motion_rows)
-            movement_checked = all(len(pose) >= 6 and np.ptp(np.asarray(pose)[:, :3], axis=0).max() >= .02
-                                   for pose in self.motion_poses)
-            if not movement_checked:
-                accepted = False
-                self.head_report = 'Head motion was too small during the check. Try slightly larger, gentle turns.'
-            if not self.base_retained:
-                accepted = False
-                self.head_report = 'The candidate disturbed existing gaze targets; the previous model was kept.' 
-            if not getattr(self.panel, 'head_feature_count', 0):
-                accepted = False
-                self.head_report = 'Not enough head movement was measured to learn a correction.'
-            self.phase = 'head_finishing'
-            for window in self.cal_windows:
-                window.hide()
-            self.worker.finish_candidate(accepted)
         elif self.phase == 'collect':
             self.phase = 'training'
             for window in self.cal_windows:
@@ -542,7 +428,6 @@ class Controller:
         if self.pending_save:
             import numpy as np
             features, labels = self.pending_save
-            self.base_data = (features, labels)
             self.pending_save = None
             try:
                 self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -558,15 +443,7 @@ class Controller:
         if training_id != self.waiting_training or not self.waiting_training or not self.worker or self.worker.isInterruptionRequested():
             return
         self.waiting_training = False
-        if self.phase == 'head_training':
-            self.phase = 'head_validate'
-            self.motion_rows = []
-            self.motion_poses = [[], [], [], []]
-            point = self.displays[self.head_display].target(.3, .7)
-            self.cal_targets = [(self.head_display, *point)] * 4
-            self.target_index = 0
-            self.show_target()
-        elif self.phase == 'training':
+        if self.phase == 'training':
             self.phase = 'validate'
             self.validation_errors = []
             self.cal_targets = [(i, *d.target(u, v)) for i, d in enumerate(self.displays)
@@ -579,13 +456,6 @@ class Controller:
             self.panel.set_status('Tracking ready', 'Saved calibration loaded. Recalibrate after moving your camera.')
 
     def cancel_calibration(self):
-        if self.phase == "head_finishing" and getattr(self, "head_session_valid", False):
-            return
-        was_head = self.head_busy
-        if was_head and self.head_candidate_pending and self.worker:
-            self.worker.finish_candidate(False)
-        elif was_head:
-            self.head_busy = False
         if self.phase:
             self.calibrated = False
             self.panel.set_calibrated(False)
@@ -598,9 +468,6 @@ class Controller:
             window.hide()
             window.deleteLater()
         self.cal_windows = []
-        if was_head and not self.head_candidate_pending and self.camera_ready:
-            self.calibrated = True
-            self.panel.set_calibrated(True)
 
     def close_event(self, event):
         if self.worker and self.worker.isRunning():

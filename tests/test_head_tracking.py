@@ -60,8 +60,7 @@ class HeadTrackingTests(unittest.TestCase):
         shifted[-9:] += .02
         np.testing.assert_allclose(estimator.predict([normal]), estimator.predict([shifted]))
         shifted[-9:] += 1
-        self.assertTrue(np.isnan(estimator.predict([shifted])).all())
-        self.assertFalse(estimator.pose_in_range)
+        self.assertTrue(np.isfinite(estimator.predict([shifted])).all())
 
     def test_within_target_motion_can_enable_supported_features(self):
         estimator = self.model_without_camera()

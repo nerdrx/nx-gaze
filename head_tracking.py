@@ -6,8 +6,6 @@ also wrap at +/-pi. This adapter restores position/scale and encodes angles
 continuously, without running a second detector. These are relative visual
 features, not a metric head pose or a camera-calibrated 3D gaze ray.
 """
-from copy import deepcopy
-
 import numpy as np
 
 FEATURE_SCHEMA = 'head-position-scale-cyclic-v2'
@@ -69,11 +67,6 @@ class HeadAwareEstimator:
                                    frame.shape[0] / frame.shape[1]), blink
 
     def train(self, features, targets):
-        # A fresh calibration supersedes any unfinished comparison.
-        self.finish_candidate(False)
-        self._train(features, targets)
-
-    def _train(self, features, targets):
         features = np.asarray(features, dtype=float)
         targets = np.asarray(targets, dtype=float)
         if (features.ndim != 2 or features.shape[0] < 3
@@ -110,49 +103,11 @@ class HeadAwareEstimator:
         weights[-9:] = np.where(within >= floors,
                                 np.minimum(1, within / np.maximum(pooled, 1e-9)), 0)
         self.pose_weights = weights[-9:].copy()
-        # This is a supported-pose guard, not a confidence/accuracy score.
-        margins = np.array([.06] * 3 + [.03] * 3 + [.025, .025, .10])
-        self.pose_low = np.quantile(pose, .01, axis=0) - margins
-        self.pose_high = np.quantile(pose, .99, axis=0) + margins
         self.estimator.train(features, targets, variable_scaling=weights)
 
-    def begin_candidate(self, features, targets):
-        """Fit a provisional model while retaining the complete baseline."""
-        self.finish_candidate(False)
-        self._baseline = (deepcopy(self.estimator.model),
-                          self.pose_weights.copy(), self.pose_low.copy(),
-                          self.pose_high.copy(),
-                          getattr(self, 'pose_in_range', True))
-        try:
-            self._train(features, targets)
-        except Exception:
-            self.finish_candidate(False)
-            raise
-
-    def comparison(self, features):
-        """Return paired raw predictions; guards and smoothing cannot bias QA."""
-        baseline = getattr(self, '_baseline', None)
-        if baseline is None:
-            raise RuntimeError('No head-motion candidate is being validated.')
-        features = np.asarray(features, dtype=float)
-        return (np.asarray(baseline[0].predict(features), dtype=float),
-                np.asarray(self.estimator.predict(features), dtype=float))
-
-    def finish_candidate(self, accept):
-        baseline = getattr(self, '_baseline', None)
-        if baseline is not None and not accept:
-            (self.estimator.model, self.pose_weights, self.pose_low,
-             self.pose_high, self.pose_in_range) = baseline
-        self._baseline = None
-
     def predict(self, features):
-        features = np.asarray(features, dtype=float)
-        pose = features[:, -9:]
-        supported = ((pose >= self.pose_low) & (pose <= self.pose_high)).all(axis=1)
-        self.pose_in_range = bool(supported.all())
-        result = np.asarray(self.estimator.predict(features), dtype=float)
-        result[~supported] = np.nan
-        return result
+        # Return all finite estimates; head position is not a visibility gate.
+        return np.asarray(self.estimator.predict(features), dtype=float)
 
     def close(self):
         self.estimator.close()
