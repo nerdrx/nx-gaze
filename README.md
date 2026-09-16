@@ -34,6 +34,8 @@ This is an experimental gaze visualizer. You must calibrate it for your own came
 
 Requirements: Linux, a webcam, Python **3.11 or 3.12**, and an X11 session or KDE Wayland with XWayland available.
 
+On Debian/Ubuntu, Qt may also need system libraries: `sudo apt install libegl1 libopengl0 libxcb-cursor0 libxkbcommon-x11-0`.
+
 Clone the repository, then set up the app:
 
 ```bash
