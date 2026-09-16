@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 import numpy as np
 from PyQt6.QtWidgets import QApplication
-from core import BlinkFilter, Display, Smoother, targets, visible_display
+from core import assess_motion, BlinkFilter, Display, Smoother, targets, visible_display
 from app import Controller
 
 
@@ -49,6 +49,17 @@ class BlinkTests(unittest.TestCase):
         slow.update((0, 0), 0, 0, 1)
         self.assertGreater(fast.update((100, 0), 0, .1, .1)[0], 90)
         self.assertLess(slow.update((100, 0), 0, .1, 1)[0], 6)
+
+
+class MotionAssessmentTests(unittest.TestCase):
+    def test_accepts_improvement_but_not_axis_regression_or_missing_coverage(self):
+        rows = [(d, 100., 50., 60., 30., True) for d in range(4) for _ in range(8)]
+        self.assertTrue(assess_motion(rows)[0])
+        self.assertFalse(assess_motion(rows[:8])[0])
+        diagonal = [(d, 100., 0., 20., 20., True) for d in range(4) for _ in range(8)]
+        self.assertFalse(assess_motion(diagonal)[0])
+        outside = [(d, 100., 50., 60., 30., False) for d in range(4) for _ in range(8)]
+        self.assertFalse(assess_motion(outside)[0])
 
 
 class LifecycleTests(unittest.TestCase):
@@ -176,6 +187,59 @@ class LifecycleTests(unittest.TestCase):
         from app import SETTLE_SECONDS, CAPTURE_SECONDS
         # Five learned points + one held-out point per display.
         self.assertLessEqual(2 * 6 * (SETTLE_SECONDS + CAPTURE_SECONDS), 15)
+
+    def test_head_step_cancel_keeps_baseline(self):
+        self.c.base_data = (np.ones((10, 492)), np.zeros((10, 2)))
+        self.c.calibrated = True
+        self.c.calibrate_head()
+        self.assertEqual(self.c.phase, 'head_collect')
+        self.assertEqual(len(set(self.c.cal_targets)), 1)
+        self.c.cancel_calibration()
+        self.assertTrue(self.c.calibrated)
+        self.assertFalse(self.c.head_busy)
+        self.worker.finish_candidate.assert_not_called()
+
+    def test_head_candidate_validation_and_rollback(self):
+        self.c.base_data = (np.ones((10, 492)), np.zeros((10, 2)))
+        self.c.calibrated = True
+        self.c.calibrate_head()
+        self.c.phase = 'head_training'
+        self.c.head_candidate_pending = True
+        self.c.waiting_training = 42
+        self.c.trained(42)
+        self.assertEqual(self.c.phase, 'head_validate')
+        self.c.target_since = time.monotonic()-2
+        target = self.c.cal_targets[0][1:]
+        self.c.compare_motion((target[0]+100,target[1]+50), (target[0]+40,target[1]+20), True)
+        self.assertEqual(self.c.motion_rows[0][1:5], (100,50,40,20))
+        self.c.cancel_calibration()
+        self.worker.finish_candidate.assert_called_once_with(False)
+        self.c.finish_head(False)
+        self.assertTrue(self.c.calibrated)
+        self.assertFalse(self.c.profile.exists())
+
+    def test_accepted_head_candidate_saves_and_restores_tracking(self):
+        self.c.head_busy = True
+        self.c.head_candidate_pending = True
+        self.c.head_session_valid = True
+        self.c.head_report = 'Moving-head check: 100 → 50 px.'
+        self.c.phase = 'head_finishing'
+        self.c.pending_save = (np.ones((20,492)), np.zeros((20,2)))
+        self.c.finish_head(True)
+        self.assertTrue(self.c.calibrated)
+        self.assertFalse(self.c.head_busy)
+        self.assertIsNone(self.c.phase)
+        self.assertTrue(self.c.profile.exists())
+        self.worker.finish_candidate.assert_not_called()
+
+    def test_layout_change_during_candidate_cannot_reactivate(self):
+        self.c.head_busy = True
+        self.c.head_candidate_pending = True
+        self.c.head_session_valid = True
+        self.c.phase = 'head_validate'
+        self.c.layout_changed()
+        self.c.finish_head(False)
+        self.assertFalse(self.c.calibrated)
 
     def test_layout_change_invalidates(self):
         self.c.calibrated = True

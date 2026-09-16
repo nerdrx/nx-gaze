@@ -17,6 +17,9 @@ class CameraWorker(QThread):
     prediction = pyqtSignal(object)
     pose_state_changed = pyqtSignal(bool)
     head_support_changed = pyqtSignal(int)
+    comparison = pyqtSignal(object, object, bool)
+    candidate_finished = pyqtSignal(bool)
+    candidate_retention = pyqtSignal(bool)
 
     def __init__(self, camera_index: int, parent=None):
         super().__init__(parent)
@@ -25,17 +28,23 @@ class CameraWorker(QThread):
         self._train_lock = threading.Lock()
         self._pending_train = None
         self._training_id = 0
+        self._pending_decision = None
 
-    def request_train(self, features, targets):
+    def request_train(self, features, targets, candidate=False, baseline=None):
         """Queue a calibration snapshot; a newer request replaces a pending one."""
         with self._train_lock:
             self._training_id += 1
             self._pending_train = (
-                self._training_id,
+                self._training_id, candidate,
+                None if baseline is None else tuple([[list(row) for row in part] for part in baseline]),
                 [list(row) for row in features],
                 [list(row) for row in targets],
             )
             return self._training_id
+
+    def finish_candidate(self, accept):
+        with self._train_lock:
+            self._pending_decision = bool(accept)
 
     def run(self):
         cap = estimator = None
@@ -64,6 +73,7 @@ class CameraWorker(QThread):
                 return
             self.ready.emit()
             is_trained = False
+            candidate_active = False
             preview_at = 0.0
             previous_pose_state = None
             blink_filter = BlinkFilter()
@@ -71,8 +81,9 @@ class CameraWorker(QThread):
                 frame_started = time.monotonic()
                 with self._train_lock:
                     training, self._pending_train = self._pending_train, None
+                    decision, self._pending_decision = self._pending_decision, None
                 if training is not None:
-                    training_id, *values = training
+                    training_id, candidate, baseline, *values = training
                     features, targets = (np.asarray(value, dtype=float) for value in values)
                     if (
                         features.ndim != 2
@@ -83,10 +94,34 @@ class CameraWorker(QThread):
                         or not np.isfinite(targets).all()
                     ):
                         raise ValueError("Calibration samples are incomplete. Please calibrate again.")
-                    estimator.train(features, targets)
+                    if candidate:
+                        estimator.begin_candidate(features, targets)
+                        candidate_active = True
+                        retained = True
+                        if baseline is not None:
+                            bx, by = (np.asarray(v, dtype=float) for v in baseline)
+                            before, after = estimator.comparison(bx)
+                            _, groups = np.unique(by, axis=0, return_inverse=True)
+                            for group in np.unique(groups):
+                                mask = groups == group
+                                old = np.median(np.linalg.norm(before[mask]-by[mask], axis=1))
+                                new = np.median(np.linalg.norm(after[mask]-by[mask], axis=1))
+                                retained &= bool(new <= max(old*1.2, old+10))
+                                old_axes = np.median(np.abs(before[mask]-by[mask]), axis=0)
+                                new_axes = np.median(np.abs(after[mask]-by[mask]), axis=0)
+                                retained &= bool((new_axes <= np.maximum(old_axes*1.2, old_axes+10)).all())
+                        self.candidate_retention.emit(retained)
+                    else:
+                        estimator.train(features, targets)
                     self.head_support_changed.emit(int(np.count_nonzero(getattr(estimator, 'pose_weights', []))))
                     is_trained = True
                     self.trained.emit(training_id)
+                if decision is not None:
+                    if candidate_active:
+                        estimator.finish_candidate(decision)
+                        candidate_active = False
+                    self.head_support_changed.emit(int(np.count_nonzero(getattr(estimator, 'pose_weights', []))))
+                    self.candidate_finished.emit(decision)
                 ok, frame = cap.read()
                 if not ok or frame is None:
                     self.sample.emit(None, None, False)
@@ -112,6 +147,9 @@ class CameraWorker(QThread):
                     if pose_state != previous_pose_state:
                         self.pose_state_changed.emit(pose_state)
                         previous_pose_state = pose_state
+                    if candidate_active:
+                        before, after = estimator.comparison([features])
+                        self.comparison.emit(tuple(before[0]), tuple(after[0]), pose_state)
                     if np.isfinite(xy).all():
                         point = (float(xy[0]), float(xy[1]))
                 self.prediction.emit(point)

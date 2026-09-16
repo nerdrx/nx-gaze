@@ -64,6 +64,7 @@ class DesktopMap(QWidget):
 class ControlPanel(QWidget):
     start_requested = pyqtSignal()
     calibrate_requested = pyqtSignal()
+    head_calibrate_requested = pyqtSignal()
     pause_requested = pyqtSignal()
     preview_requested = pyqtSignal(bool)
     camera_changed = pyqtSignal(int)
@@ -123,7 +124,14 @@ class ControlPanel(QWidget):
         map_layout.addWidget(self.map_note)
         self.calibrate_button = QPushButton('Quick calibration')
         self.calibrate_button.clicked.connect(self.calibrate_requested.emit)
-        map_layout.addWidget(self.calibrate_button)
+        calibration_actions = QHBoxLayout()
+        calibration_actions.addWidget(self.calibrate_button)
+        self.head_button = QPushButton('Calibrate head movement')
+        self.head_button.setEnabled(False)
+        self.head_button.setToolTip('About 15 seconds: keep looking at a dot while turning your head.')
+        self.head_button.clicked.connect(self.head_calibrate_requested.emit)
+        calibration_actions.addWidget(self.head_button)
+        map_layout.addLayout(calibration_actions)
         columns.addWidget(map_card, 3)
         camera_card, camera_layout = self._card()
         camera_card.setMinimumHeight(320)
@@ -304,6 +312,7 @@ class ControlPanel(QWidget):
         self.start_button.setText('Stop camera' if running else 'Start camera')
         self.camera_combo.setEnabled(not running)
         self.pause_button.setEnabled(running and self._calibrated)
+        self.head_button.setEnabled(running and self._calibrated)
         if not running:
             self.desktop_map.gaze = None
             self.desktop_map.update()
@@ -331,8 +340,9 @@ class ControlPanel(QWidget):
         self._calibrated = calibrated
         self.calibrate_button.setText('Recalibrate' if calibrated else 'Quick calibration')
         self.pause_button.setEnabled(self._running and calibrated)
+        self.head_button.setEnabled(self._running and calibrated)
         support = ('Head adjustment learned from fixed-target movement.' if getattr(self, 'head_feature_count', 0) else
-                   'Head adjustment unavailable for this calibration. Large pose changes hide the marker.')
+                   'Use Calibrate head movement to learn your head-turn correction.')
         self.map_note.setText(support if calibrated else
                               'Five targets + one quick check. About 7 seconds per screen.')
 

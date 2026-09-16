@@ -82,3 +82,23 @@ class BlinkFilter:
             self.recovering = False
             return False
         return True
+
+
+def assess_motion(rows, directions=4):
+    """Compare paired unsmoothed errors with equal weight for every direction."""
+    import statistics
+    groups = [[r for r in rows if r[0] == i] for i in range(directions)]
+    if any(len(group) < 6 for group in groups):
+        return False, 'Not enough clean samples in every direction.'
+    if any(sum(bool(r[5]) for r in group) / len(group) < .8 for group in groups):
+        return False, 'Some movements exceeded the learned head range.'
+    before = statistics.mean(statistics.median(math.hypot(r[1], r[2]) for r in group) for group in groups)
+    after = statistics.mean(statistics.median(math.hypot(r[3], r[4]) for r in group) for group in groups)
+    axis_ok = all(statistics.median(abs(r[new]) for r in group) <=
+                  max(statistics.median(abs(r[old]) for r in group) * 1.05,
+                      statistics.median(abs(r[old]) for r in group) + 5)
+                  for group in groups for old, new in [(1, 3), (2, 4)])
+    # Improvement must exceed both a relative threshold and tiny pixel noise.
+    accepted = after <= before * .9 and before - after >= 3 and axis_ok
+    result = f'Moving-head check: {before:.0f} → {after:.0f} px.'
+    return accepted, result

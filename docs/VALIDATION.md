@@ -1,3 +1,9 @@
+# v0.3.0-preview head calibration
+
+Optional fixed-dot head turns (left/right/up/down) learn a provisional correction. A different target checks paired baseline/candidate predictions on separate frames. Acceptance requires direction coverage, measured movement, pose-range coverage, at least 10% and 3px aggregate improvement, no material per-direction axis regression, and preserved base-target fit. Rejection/cancellation restores the complete prior model and guard. Accepted raw calibration samples reproduce the fit after restart through deterministic per-target balancing.
+
+31 tests pass: model transactions, reproducible persistence, undiluted within-target evidence, paired motion assessment, cancellation/layout-change races, plus existing tracking/overlay checks. Synthetic model tests demonstrate correction learning on a constructed drift case; they do not establish user accuracy. Actual EyeTrax model snapshot/paired-prediction/rollback also passes using local samples without uploading them. Updated UI passes headless Gamescope smoke. Nominal motion collection/check time is 15.2 seconds, excluding training and tracking-loss extensions. No new human head-motion accuracy result is claimed.
+
 # v0.2.1-preview correction
 
 The v0.2.0 pose weighting used pooled variation, which confounded head position with calibration target. The replacement uses within-target variation and disables unsupported pose inputs. A camera-relative pose guard suppresses extrapolation outside the calibrated range. This is a conservative fallback, not a claim of reliable free-head gaze tracking.
