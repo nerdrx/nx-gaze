@@ -15,6 +15,8 @@ class CameraWorker(QThread):
     ready = pyqtSignal()
     trained = pyqtSignal(int)
     prediction = pyqtSignal(object)
+    pose_state_changed = pyqtSignal(bool)
+    head_support_changed = pyqtSignal(int)
 
     def __init__(self, camera_index: int, parent=None):
         super().__init__(parent)
@@ -63,6 +65,7 @@ class CameraWorker(QThread):
             self.ready.emit()
             is_trained = False
             preview_at = 0.0
+            previous_pose_state = None
             blink_filter = BlinkFilter()
             while not self.isInterruptionRequested():
                 frame_started = time.monotonic()
@@ -81,6 +84,7 @@ class CameraWorker(QThread):
                     ):
                         raise ValueError("Calibration samples are incomplete. Please calibrate again.")
                     estimator.train(features, targets)
+                    self.head_support_changed.emit(int(np.count_nonzero(getattr(estimator, 'pose_weights', []))))
                     is_trained = True
                     self.trained.emit(training_id)
                 ok, frame = cap.read()
@@ -104,6 +108,10 @@ class CameraWorker(QThread):
                 point = None
                 if is_trained and features is not None and not blink:
                     xy = estimator.predict([features])[0]
+                    pose_state = getattr(estimator, 'pose_in_range', True)
+                    if pose_state != previous_pose_state:
+                        self.pose_state_changed.emit(pose_state)
+                        previous_pose_state = pose_state
                     if np.isfinite(xy).all():
                         point = (float(xy[0]), float(xy[1]))
                 self.prediction.emit(point)

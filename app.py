@@ -226,6 +226,8 @@ class Controller:
         self.worker.preview_enabled = self.preview
         self.worker.sample.connect(self.sample)
         self.worker.prediction.connect(self.prediction)
+        self.worker.pose_state_changed.connect(self.pose_state)
+        self.worker.head_support_changed.connect(self.panel.set_head_support)
         self.worker.ready.connect(self.ready)
         self.worker.trained.connect(self.trained)
         self.worker.failed.connect(self.failed)
@@ -326,6 +328,13 @@ class Controller:
                 self.samples.append(features.copy())
                 self.labels.append(self.cal_targets[self.target_index][1:])
                 self.target_samples += 1
+
+    def pose_state(self, supported):
+        if self.calibrated and not self.phase and not self.paused:
+            if supported:
+                self.panel.set_status('Tracking resumed', 'Head position is back within the calibrated range.')
+            else:
+                self.panel.set_status('Head moved beyond calibration', 'Move back toward your calibrated position. Unreliable gaze estimates are hidden.')
 
     def prediction(self, point):
         self.last_prediction = point

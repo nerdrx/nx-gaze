@@ -32,6 +32,48 @@ class HeadTrackingTests(unittest.TestCase):
         self.assertIsNone(compensate_features([1, 2, 3], face(scale=0), .75))
         self.assertIsNone(compensate_features([1, 2, 3], face(dx=float('nan')), .75))
 
+    def model_without_camera(self):
+        from sklearn.linear_model import Ridge
+        from sklearn.preprocessing import StandardScaler
+        class Model:
+            def train(self, x, y, variable_scaling):
+                self.scaler = StandardScaler()
+                self.weights = variable_scaling
+                self.model = Ridge(alpha=1).fit(self.scaler.fit_transform(x)*self.weights, y)
+            def predict(self, x):
+                return self.model.predict(self.scaler.transform(x)*self.weights)
+        estimator = HeadAwareEstimator.__new__(HeadAwareEstimator)
+        estimator.estimator = Model()
+        return estimator
+
+    def test_target_correlated_head_pose_cannot_steer_gaze(self):
+        estimator = self.model_without_camera()
+        target = np.repeat([-1., 1.], 30)
+        x = np.zeros((60, 10))
+        x[:, 0] = target
+        x[:, -9:] = target[:, None] * .04
+        y = np.column_stack([target*100, target*40])
+        estimator.train(x, y)
+        np.testing.assert_array_equal(estimator.pose_weights, np.zeros(9))
+        normal = x[0].copy()
+        shifted = normal.copy()
+        shifted[-9:] += .02
+        np.testing.assert_allclose(estimator.predict([normal]), estimator.predict([shifted]))
+        shifted[-9:] += 1
+        self.assertTrue(np.isnan(estimator.predict([shifted])).all())
+        self.assertFalse(estimator.pose_in_range)
+
+    def test_within_target_motion_can_enable_supported_features(self):
+        estimator = self.model_without_camera()
+        target = np.repeat([-1., 1.], 60)
+        head = np.tile(np.linspace(-.1, .1, 60), 2)
+        x = np.zeros((120, 10))
+        x[:, 0] = target - head
+        x[:, -3] = head
+        estimator.train(x, np.column_stack([target*100, target*40]))
+        self.assertGreater(estimator.pose_weights[-3], .9)
+        self.assertTrue(np.isfinite(estimator.predict(x)).all())
+
     def test_single_inference_and_no_stale_pose(self):
         class Detector:
             calls = 0

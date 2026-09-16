@@ -25,7 +25,7 @@ NX Gaze estimates where you are looking and draws a smooth, click-through marker
 
 - **Calibrate across displays.** Follow five targets and one brief check per screen—about 7 seconds per screen when tracking is stable. Blinks or missed frames may extend this.
 - **Keep using your mouse.** The overlay passes clicks through to the application underneath.
-- **Compensate for head movement.** Preserve camera-relative face position and scale, alongside continuous head-orientation features, in the same inference pass.
+- **Conservative head handling.** Track camera-relative position, scale, and continuous orientation in one inference pass. Only enable head adjustments supported by movement while fixating the same target; hide estimates outside the calibrated pose range.
 - **Filter blinks.** Hold the last position for up to 400 ms and skip blink/reopening samples. Lost face tracking hides the marker immediately.
 - **Tune the feel.** Choose colour, ring/dot/crosshair/diamond shape, 4–160 px radius, 10–100% opacity, and 0–2000 ms smoothing response. Appearance settings persist. Higher smoothing adds visible lag.
 - **Keep frames local.** Camera frames are processed on your machine, without recording or uploading them.
@@ -68,7 +68,7 @@ Screen positions use Qt's global logical desktop coordinates, including displays
 
 The marker hides when a prediction falls in a gap between screens or outside the desktop, after prolonged detected blinks, and when face tracking is lost. Brief detected blinks hold the last position rather than moving the marker. A changed display layout or camera selection invalidates calibration so an old mapping is not silently reused.
 
-Head compensation is experimental. A stationary calibration cannot fully learn large head translations or distance changes; webcam face scale is a relative cue, not metric depth.
+Head adjustment is disabled when a calibration lacks enough within-target motion to determine it. This prevents target-correlated head positions from introducing unsupported correction directions; it does not solve unrestricted head-motion tracking. A stationary calibration cannot fully learn large head translations or distance changes; webcam face scale is a relative cue, not metric depth.
 
 Wide monitor arrangements remain a physical challenge: turning toward a side screen can move your eyes out of the camera's useful view. Multi-display coordinate support does not guarantee accurate tracking across every camera angle, scaling configuration, or seating position.
 

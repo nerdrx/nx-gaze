@@ -68,15 +68,36 @@ class HeadAwareEstimator:
 
     def train(self, features, targets):
         features = np.asarray(features, dtype=float)
+        targets = np.asarray(targets, dtype=float)
         weights = np.ones(features.shape[1])
-        # Nearly stationary calibration cannot identify head-motion coefficients.
-        # Bound scaling of the new inputs rather than magnifying sensor noise.
+        pose = features[:, -9:]
+        _, groups = np.unique(targets, axis=0, return_inverse=True)
+        residual = pose.copy()
+        for group in np.unique(groups):
+            selected = groups == group
+            residual[selected] -= pose[selected].mean(axis=0)
+        # Between-target head motion says nothing about compensation direction.
+        # Enable a pose feature only with meaningful movement at a fixed target.
         floors = np.array([.03] * 6 + [.025, .025, .05])
-        weights[-9:] = np.minimum(1, features[:, -9:].std(axis=0) / floors)
+        within = residual.std(axis=0)
+        pooled = pose.std(axis=0)
+        weights[-9:] = np.where(within >= floors,
+                                within / np.maximum(pooled, 1e-9), 0)
+        self.pose_weights = weights[-9:].copy()
+        # This is a supported-pose guard, not a confidence/accuracy score.
+        margins = np.array([.06] * 3 + [.03] * 3 + [.025, .025, .10])
+        self.pose_low = np.quantile(pose, .01, axis=0) - margins
+        self.pose_high = np.quantile(pose, .99, axis=0) + margins
         self.estimator.train(features, targets, variable_scaling=weights)
 
     def predict(self, features):
-        return self.estimator.predict(features)
+        features = np.asarray(features, dtype=float)
+        pose = features[:, -9:]
+        supported = ((pose >= self.pose_low) & (pose <= self.pose_high)).all(axis=1)
+        self.pose_in_range = bool(supported.all())
+        result = np.asarray(self.estimator.predict(features), dtype=float)
+        result[~supported] = np.nan
+        return result
 
     def close(self):
         self.estimator.close()

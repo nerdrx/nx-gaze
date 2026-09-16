@@ -322,11 +322,18 @@ class ControlPanel(QWidget):
         self.desktop_map.gaze = None if x is None or y is None else (x, y)
         self.desktop_map.update()
 
+    def set_head_support(self, count):
+        self.head_feature_count = count
+        if self._calibrated:
+            self.set_calibrated(True)
+
     def set_calibrated(self, calibrated):
         self._calibrated = calibrated
         self.calibrate_button.setText('Recalibrate' if calibrated else 'Quick calibration')
         self.pause_button.setEnabled(self._running and calibrated)
-        self.map_note.setText('Head position compensation is automatic. Recalibrate after moving your camera.' if calibrated else
+        support = ('Head adjustment learned from fixed-target movement.' if getattr(self, 'head_feature_count', 0) else
+                   'Head adjustment unavailable for this calibration. Large pose changes hide the marker.')
+        self.map_note.setText(support if calibrated else
                               'Five targets + one quick check. About 7 seconds per screen.')
 
     def _apply_theme(self, dark):

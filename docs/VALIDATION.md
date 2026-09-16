@@ -1,3 +1,9 @@
+# v0.2.1-preview correction
+
+The v0.2.0 pose weighting used pooled variation, which confounded head position with calibration target. The replacement uses within-target variation and disables unsupported pose inputs. A camera-relative pose guard suppresses extrapolation outside the calibrated range. This is a conservative fallback, not a claim of reliable free-head gaze tracking.
+
+20 tests pass, including actual Ridge/StandardScaler regression: changing target-correlated unsupported pose features cannot steer the output; independent within-target motion can enable supported features; out-of-range pose returns no estimate. Existing v0.2 calibration samples are reused and retrained. No new live accuracy result is claimed.
+
 # Validation for v0.2.0-preview
 
 - 18 automated checks pass, covering head-feature continuity, camera-relative translation/scale, one inference per frame, no stale pose reuse, low-variance regularization, blink recovery/hold, marker colours/shapes/opacity, and prior lifecycle/geometry checks.
