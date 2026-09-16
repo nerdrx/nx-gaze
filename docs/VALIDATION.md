@@ -1,4 +1,16 @@
-# Validation for v0.1.0-preview
+# Validation for v0.2.0-preview
+
+- 18 automated checks pass, covering head-feature continuity, camera-relative translation/scale, one inference per frame, no stale pose reuse, low-variance regularization, blink recovery/hold, marker colours/shapes/opacity, and prior lifecycle/geometry checks.
+- Updated real webcam smoke: 66 frames processed, 66 with face features, 492 augmented features per valid frame, no errors. No images saved. This is inference evidence, not an accuracy result.
+- Actual EyeTrax train/predict path accepts augmented features and bounded scaling; finite output checked with synthetic inputs.
+- Calibration nominally takes 14.4 seconds across two screens (five targets and one held-out check per screen), excluding model training and extensions for blinks or tracking loss. Real completion time has not yet been measured with a person.
+- Updated UI passes headless Gamescope smoke. Light/dark settings layout and persistent controls checked offscreen.
+- No before/after head-motion accuracy claim: camera-relative compensation needs fresh personal calibration, and broad head movement outside the sampled range remains a limitation.
+- Appearance settings live in the platform Qt settings location (Linux normally `~/.config/NX/Gaze.conf`). Calibration features remain local; old profiles are rejected by feature-schema metadata without deletion.
+
+## Initial preview evidence
+
+### v0.1.0-preview
 
 This is an experimental build, not a claim of measured gaze accuracy.
 

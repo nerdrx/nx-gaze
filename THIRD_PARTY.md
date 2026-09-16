@@ -21,6 +21,6 @@ MediaPipe's software license does not by itself establish the license of every d
 
 ## Attribution and distribution
 
-NX Gaze uses EyeTrax as a dependency. Its gaze estimation is credited to EyeTrax and its underlying libraries; the NX contribution is the application interface, display geometry, calibration workflow, and overlay behavior.
+NX Gaze uses EyeTrax as a dependency. Its gaze estimation is credited to EyeTrax and its underlying libraries; the NX contribution is the application interface, display geometry, calibration workflow, and overlay behavior. The head-feature adapter taps the pinned EyeTrax 0.4.0 detector once per frame, preserves camera-relative position/scale, and replaces wrapped angles with sine/cosine features; it does not run a separate tracking model.
 
 NX Gaze application code is distributed under [GPL-3.0-or-later](LICENSE). The GPL PyQt6 distribution is used by this project. If packaging dependencies into a binary or installer, preserve each package's license and notice files, including notices for transitive dependencies, and meet the applicable source distribution requirements. This credit index does not replace those files.

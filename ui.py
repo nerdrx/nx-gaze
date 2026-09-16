@@ -2,12 +2,12 @@
 from pathlib import Path
 import re
 
-from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
+from PyQt6.QtCore import Qt, QRectF, QPointF, QSettings, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPalette, QPen, QPixmap
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
-    QComboBox, QSlider, QCheckBox, QSizePolicy, QGraphicsDropShadowEffect,
+    QComboBox, QSlider, QCheckBox, QSizePolicy, QGraphicsDropShadowEffect, QColorDialog,
 )
 
 
@@ -68,15 +68,20 @@ class ControlPanel(QWidget):
     preview_requested = pyqtSignal(bool)
     camera_changed = pyqtSignal(int)
     appearance_changed = pyqtSignal(int, float)
+    style_changed = pyqtSignal(str, str, int)
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle('NX Gaze')
-        self.resize(980, 800)
-        self.setMinimumSize(840, 790)
+        self.resize(980, 880)
+        self.setMinimumSize(840, 850)
         self.setObjectName('window')
         self._running = False
         self._calibrated = False
+        self.settings = QSettings('NX', 'Gaze')
+        self._color = str(self.settings.value('color', '#7700ff'))
+        if not QColor(self._color).isValid():
+            self._color = '#7700ff'
         root = QVBoxLayout(self)
         root.setContentsMargins(32, 26, 32, 22)
         root.setSpacing(20)
@@ -113,10 +118,10 @@ class ControlPanel(QWidget):
         map_layout.addLayout(map_heading)
         self.desktop_map = DesktopMap()
         map_layout.addWidget(self.desktop_map, 1)
-        self.map_note = self._label('Calibrate each screen to connect your gaze across the desktop.', 'muted')
+        self.map_note = self._label('Five targets + one quick check. About 7 seconds per screen.', 'muted')
         self.map_note.setWordWrap(True)
         map_layout.addWidget(self.map_note)
-        self.calibrate_button = QPushButton('Calibrate all screens')
+        self.calibrate_button = QPushButton('Quick calibration')
         self.calibrate_button.clicked.connect(self.calibrate_requested.emit)
         map_layout.addWidget(self.calibrate_button)
         columns.addWidget(map_card, 3)
@@ -158,9 +163,40 @@ class ControlPanel(QWidget):
         settings.addWidget(self._label('Make it feel right', 'section'))
         sliders = QHBoxLayout()
         sliders.setSpacing(32)
-        self.radius_slider = self._slider(sliders, 'Gaze bubble', 12, 70, 30, 'px')
-        self.smoothing_slider = self._slider(sliders, 'Smoothing', 0, 90, 60, '%')
+        self.radius_slider = self._slider(sliders, 'Bubble radius', 4, 160,
+                                          self._saved_int('radius', 30, 4, 160), 'px')
+        self.smoothing_slider = self._slider(sliders, 'Smoothing response', 0, 100,
+                                             self._saved_int('smoothing', 35, 0, 100), 'ms')
+        self.smoothing_slider.setToolTip('0 ms follows immediately. Higher values smooth more and react more slowly.')
+        self.radius_slider.valueChanged.connect(self._appearance)
+        self.smoothing_slider.valueChanged.connect(self._appearance)
         settings.addLayout(sliders)
+        styles = QHBoxLayout()
+        styles.setSpacing(24)
+        color_layout = QVBoxLayout()
+        color_layout.addWidget(QLabel('Colour'))
+        self.color_button = QPushButton()
+        self.color_button.setAccessibleName('Choose gaze bubble colour')
+        self._update_color_button()
+        self.color_button.clicked.connect(self._choose_color)
+        color_layout.addWidget(self.color_button)
+        styles.addLayout(color_layout, 1)
+        shape_layout = QVBoxLayout()
+        shape_layout.addWidget(QLabel('Shape'))
+        self.shape_combo = QComboBox()
+        self.shape_combo.setAccessibleName('Gaze bubble shape')
+        for shape in ('ring', 'dot', 'crosshair', 'diamond'):
+            self.shape_combo.addItem(shape.title(), shape)
+        saved_shape = self.shape_combo.findData(str(self.settings.value('shape', 'ring')))
+        self.shape_combo.setCurrentIndex(max(0, saved_shape))
+        shape_layout.addWidget(self.shape_combo)
+        styles.addLayout(shape_layout, 1)
+        self.opacity_slider = self._slider(styles, 'Opacity', 10, 100,
+                                           self._saved_int('opacity', 80, 10, 100), '%')
+        self.opacity_slider.setToolTip('Lower opacity makes the overlay more transparent.')
+        self.shape_combo.currentIndexChanged.connect(self._style)
+        self.opacity_slider.valueChanged.connect(self._style)
+        settings.addLayout(styles)
         root.addWidget(settings_card)
         status_row = QHBoxLayout()
         status_text = QVBoxLayout()
@@ -178,7 +214,9 @@ class ControlPanel(QWidget):
         root.addLayout(status_row)
         footer = self._label('ON YOUR DEVICE   ·   Local camera processing   ·   No video uploads', 'footer')
         root.addWidget(footer)
-        self._apply_theme(False)
+        dark = str(self.settings.value('dark', False)).strip().lower() in ('true', '1', 'yes', 'on')
+        self.theme.setChecked(dark)
+        self._apply_theme(dark)
 
     def _label(self, text, name):
         label = QLabel(text)
@@ -198,21 +236,53 @@ class ControlPanel(QWidget):
         heading = QHBoxLayout()
         heading.addWidget(QLabel(title))
         heading.addStretch()
-        readout = self._label(f'{value} {suffix}', 'muted')
+        format_value = (lambda v: f'{round(2000 * (v / 100) ** 2)} ms') if suffix == 'ms' else (lambda v: f'{v} {suffix}')
+        readout = self._label(format_value(value), 'muted')
         heading.addWidget(readout)
         group.addLayout(heading)
         slider = QSlider(Qt.Orientation.Horizontal)
         slider.setRange(minimum, maximum)
         slider.setValue(value)
         slider.setAccessibleName(title)
-        slider.valueChanged.connect(lambda v: readout.setText(f'{v} {suffix}'))
-        slider.valueChanged.connect(self._appearance)
+        slider.valueChanged.connect(lambda v: readout.setText(format_value(v)))
         group.addWidget(slider)
         layout.addLayout(group, 1)
         return slider
 
+    def _saved_int(self, key, default, minimum, maximum):
+        try:
+            return max(minimum, min(maximum, int(self.settings.value(key, default))))
+        except (TypeError, ValueError):
+            return default
+
     def _appearance(self):
+        self.settings.setValue('radius', self.radius_slider.value())
+        self.settings.setValue('smoothing', self.smoothing_slider.value())
         self.appearance_changed.emit(self.radius_slider.value(), self.smoothing_slider.value()/100)
+
+    def current_style(self):
+        return self._color, self.shape_combo.currentData(), self.opacity_slider.value()
+
+    def _style(self):
+        color, shape, opacity = self.current_style()
+        for key, value in (('color', color), ('shape', shape), ('opacity', opacity)):
+            self.settings.setValue(key, value)
+        self.style_changed.emit(color, shape, opacity)
+
+    def _update_color_button(self):
+        swatch = QPixmap(16, 16)
+        swatch.fill(QColor(self._color))
+        self.color_button.setIcon(QIcon(swatch))
+        self.color_button.setText(self._color.upper())
+
+    def _choose_color(self):
+        dialog = QColorDialog(QColor(self._color), self)
+        dialog.setWindowTitle('Gaze bubble colour')
+        dialog.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog)
+        if dialog.exec():
+            self._color = dialog.selectedColor().name()
+            self._update_color_button()
+            self._style()
 
     def _preview_visibility(self, visible):
         if not visible:
@@ -254,23 +324,42 @@ class ControlPanel(QWidget):
 
     def set_calibrated(self, calibrated):
         self._calibrated = calibrated
-        self.calibrate_button.setText('Recalibrate all screens' if calibrated else 'Calibrate all screens')
+        self.calibrate_button.setText('Recalibrate' if calibrated else 'Quick calibration')
         self.pause_button.setEnabled(self._running and calibrated)
-        self.map_note.setText('Calibrated for this display arrangement.' if calibrated else
-                              'Calibrate each screen to connect your gaze across the desktop.')
+        self.map_note.setText('Head position compensation is automatic. Recalibrate after moving your camera.' if calibrated else
+                              'Five targets + one quick check. About 7 seconds per screen.')
 
     def _apply_theme(self, dark):
+        self.settings.setValue('dark', dark)
         bg, surface, tile, ink, muted, line, accent = (
             ('#000000', '#121017', '#17141f', '#f4f3f8', '#9c98ab', '#262330', '#a566ff')
             if dark else ('#fafafc', '#ffffff', '#faf9fd', '#1a1823', '#6c687e', '#ece9f4', '#7700ff'))
         strong = '#51485f' if dark else '#ddd8ea'
         on_accent = '#140b22' if dark else '#ffffff'
+        palette = self.palette()
+        for role, color in (
+            (QPalette.ColorRole.Window, surface),
+            (QPalette.ColorRole.WindowText, ink),
+            (QPalette.ColorRole.Base, tile),
+            (QPalette.ColorRole.AlternateBase, surface),
+            (QPalette.ColorRole.Text, ink),
+            (QPalette.ColorRole.Button, tile),
+            (QPalette.ColorRole.ButtonText, ink),
+            (QPalette.ColorRole.Highlight, accent),
+            (QPalette.ColorRole.HighlightedText, on_accent),
+            (QPalette.ColorRole.PlaceholderText, muted),
+        ):
+            palette.setColor(role, QColor(color))
+        self.setPalette(palette)
         self.mark.load(str(Path(__file__).parent / 'assets' / ('nx-wordmark-light.svg' if dark else 'nx-wordmark-violet.svg')))
         self.desktop_map.dark = dark
         self.desktop_map.update()
         self.setStyleSheet(f'''
             QWidget {{ color: {ink}; font-family: "Inter", "Noto Sans", sans-serif; font-size: 13px; }}
             QWidget#window {{ background: {bg}; }}
+            QDialog, QColorDialog {{ background: {surface}; color: {ink}; }}
+            QLineEdit, QSpinBox, QDoubleSpinBox {{ background: {tile}; color: {ink}; border: 1px solid {strong}; border-radius: 6px; padding: 4px; selection-background-color: {accent}; selection-color: {on_accent}; }}
+            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {accent}; }}
             QLabel {{ background: transparent; border: none; }}
             QLabel#product {{ font-size: 23px; font-weight: 600; padding-left: 8px; }}
             QLabel#hero {{ font-size: 32px; font-weight: 650; letter-spacing: -1px; }}

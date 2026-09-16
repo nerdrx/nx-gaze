@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 import numpy as np
 from PyQt6.QtWidgets import QApplication
-from core import Display, Smoother, targets, visible_display
+from core import BlinkFilter, Display, Smoother, targets, visible_display
 from app import Controller
 
 
@@ -19,7 +19,7 @@ class GeometryTests(unittest.TestCase):
         for point in [(0, 0), (2560, -10), (float('nan'), 0), None]:
             self.assertIsNone(visible_display(displays, point))
         points = targets(displays)
-        self.assertEqual(len(points), 18)
+        self.assertEqual(len(points), 10)
         for index, x, y in points:
             self.assertTrue(displays[index].contains(x, y))
 
@@ -29,6 +29,26 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(smoother.update((100, 20), 1, .02, .6), (100, 20))
         self.assertEqual(smoother.update((200, 20), 1, 1, .6), (200, 20))
         self.assertEqual(smoother.update((210, 20), 1, 1.02, 0), (210, 20))
+
+
+class BlinkTests(unittest.TestCase):
+    def test_reopening_requires_stable_frames(self):
+        gate = BlinkFilter()
+        self.assertFalse(gate.update(True, False, 0))
+        self.assertTrue(gate.update(True, True, .1))
+        self.assertTrue(gate.update(True, False, .2))
+        self.assertTrue(gate.update(True, False, .25))
+        self.assertFalse(gate.update(True, False, .31))
+        self.assertTrue(gate.update(True, True, .4))
+        self.assertFalse(gate.update(False, False, .5))
+        self.assertFalse(gate.update(True, False, .6))
+
+    def test_max_smoothing_is_slower(self):
+        fast, slow = Smoother(), Smoother()
+        fast.update((0, 0), 0, 0, .1)
+        slow.update((0, 0), 0, 0, 1)
+        self.assertGreater(fast.update((100, 0), 0, .1, .1)[0], 90)
+        self.assertLess(slow.update((100, 0), 0, .1, 1)[0], 6)
 
 
 class LifecycleTests(unittest.TestCase):
@@ -102,6 +122,60 @@ class LifecycleTests(unittest.TestCase):
         self.c.trained(42)
         self.assertFalse(self.c.calibrated)
         self.worker.request_train.assert_not_called()
+
+    def test_short_blink_holds_but_lost_face_hides(self):
+        self.c.calibrated = True
+        point = self.c.displays[0].target(.5, .5)
+        self.c.prediction(point)
+        self.c.sample(np.array([1]), None, True)
+        self.c.prediction(None)
+        self.assertEqual(self.c.overlays[0].point, point)
+        self.assertEqual(self.c.smoother.point, point)
+        self.c.sample(None, None, False)
+        self.c.prediction(None)
+        self.assertIsNone(self.c.overlays[0].point)
+        self.assertIsNone(self.c.smoother.point)
+
+    def test_long_blink_and_stale_profile_are_rejected(self):
+        self.c.calibrated = True
+        self.c.prediction(self.c.displays[0].target(.5, .5))
+        self.c.blink_since = time.monotonic() - .5
+        self.c.sample(np.array([1]), None, True)
+        self.c.prediction(None)
+        self.assertIsNone(self.c.overlays[0].point)
+        import json
+        metadata = self.c.metadata()
+        metadata['version'] = 1
+        np.savez(self.c.profile, metadata=json.dumps(metadata), features=np.ones((10, 3)), targets=np.zeros((10, 2)))
+        self.c.ready()
+        self.worker.request_train.assert_not_called()
+        self.assertEqual(self.c.panel.status_label.text(), 'Quick calibration needed')
+
+    def test_marker_style_radius_and_opacity_render(self):
+        from PyQt6.QtGui import QImage
+        overlay = self.c.overlays[0]
+        overlay.setGeometry(0, 0, 120, 120)
+        overlay.point = (60, 60)
+        overlay.radius = 30
+        overlay.color = '#ff2200'
+        overlay.opacity = 20
+        rendered = []
+        for shape in ('ring', 'dot', 'crosshair', 'diamond'):
+            overlay.shape = shape
+            image = QImage(120, 120, QImage.Format.Format_ARGB32)
+            image.fill(0)
+            overlay.render(image)
+            bits = image.bits()
+            bits.setsize(image.sizeInBytes())
+            rendered.append(bytes(bits))
+            self.assertGreater(image.pixelColor(60, 60).red(), 200)
+            self.assertLessEqual(image.pixelColor(60, 60).alpha(), 60)
+        self.assertEqual(len(set(rendered)), 4)
+
+    def test_quick_calibration_nominal_duration(self):
+        from app import SETTLE_SECONDS, CAPTURE_SECONDS
+        # Five learned points + one held-out point per display.
+        self.assertLessEqual(2 * 6 * (SETTLE_SECONDS + CAPTURE_SECONDS), 15)
 
     def test_layout_change_invalidates(self):
         self.c.calibrated = True

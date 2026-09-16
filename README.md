@@ -23,9 +23,11 @@ A local webcam gaze overlay for your Linux desktop — across your screens.
 
 NX Gaze estimates where you are looking and draws a smooth, click-through marker over your desktop. Its control panel follows the [NX Clear design system](https://github.com/nerdrx/nx-hub/blob/main/docs/DESIGN.md), with light and dark surfaces and the official NX wordmark.
 
-- **Calibrate across displays.** Follow nine targets on each connected screen; one model learns the combined desktop.
+- **Calibrate across displays.** Follow five targets and one brief check per screen—about 7 seconds per screen when tracking is stable. Blinks or missed frames may extend this.
 - **Keep using your mouse.** The overlay passes clicks through to the application underneath.
-- **Tune the feel.** Adjust the marker and smoothing from the control panel.
+- **Compensate for head movement.** Preserve camera-relative face position and scale, alongside continuous head-orientation features, in the same inference pass.
+- **Filter blinks.** Hold the last position for up to 400 ms and skip blink/reopening samples. Lost face tracking hides the marker immediately.
+- **Tune the feel.** Choose colour, ring/dot/crosshair/diamond shape, 4–160 px radius, 10–100% opacity, and 0–2000 ms smoothing response. Appearance settings persist. Higher smoothing adds visible lag.
 - **Keep frames local.** Camera frames are processed on your machine, without recording or uploading them.
 
 This is an experimental gaze visualizer. You must calibrate it for your own camera, posture, and screen arrangement. Live accuracy has not been established; the marker is an estimate, not a precise pointing device.
@@ -58,11 +60,15 @@ The first camera start downloads the MediaPipe face model if it is not already c
 3. Follow the additional check targets. The overlay starts automatically; adjust its appearance and smoothing.
 4. Recalibrate after moving the camera or changing your usual seating position.
 
+Existing v0.1 calibration profiles need a fresh quick calibration for the updated head features. No extra head-movement calibration routine is required.
+
 ## Multiple screens
 
 Screen positions use Qt's global logical desktop coordinates, including displays to the left or above the primary screen. Calibration covers every connected display and trains a single model across them.
 
-The marker hides when a prediction falls in a gap between screens or outside the desktop, during detected blinks, and when face tracking is lost. A changed display layout or camera selection invalidates calibration so an old mapping is not silently reused.
+The marker hides when a prediction falls in a gap between screens or outside the desktop, after prolonged detected blinks, and when face tracking is lost. Brief detected blinks hold the last position rather than moving the marker. A changed display layout or camera selection invalidates calibration so an old mapping is not silently reused.
+
+Head compensation is experimental. A stationary calibration cannot fully learn large head translations or distance changes; webcam face scale is a relative cue, not metric depth.
 
 Wide monitor arrangements remain a physical challenge: turning toward a side screen can move your eyes out of the camera's useful view. Multi-display coordinate support does not guarantee accurate tracking across every camera angle, scaling configuration, or seating position.
 
@@ -73,7 +79,7 @@ Wide monitor arrangements remain a physical challenge: turning toward a side scr
 - Stop the camera when you are finished. The gaze marker is visualization only; it does not click, type, or trigger actions.
 - The launcher targets X11 and KDE Wayland through Qt's `xcb` backend and XWayland. Overlay placement on other Wayland compositors is not guaranteed.
 - Fullscreen games, screen capture, and compositor stacking rules may affect whether the marker is visible or captured.
-- Lighting, glasses, occlusion, head movement, and camera placement can affect tracking. The post-calibration check reports median error on held-out targets in logical pixels. This is a short personal check, not a general accuracy or latency benchmark.
+- Lighting, glasses, occlusion, head movement, and camera placement can affect tracking. The brief post-calibration check reports median error at one held-out position per screen in logical pixels. It cannot establish full-screen or moving-head accuracy.
 
 See [validation notes](docs/VALIDATION.md) for what was tested and what still needs hands-on checks.
 

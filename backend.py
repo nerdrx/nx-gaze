@@ -6,6 +6,7 @@ import time
 
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QImage
+from core import BlinkFilter
 
 
 class CameraWorker(QThread):
@@ -40,7 +41,7 @@ class CameraWorker(QThread):
             # Import heavyweight dependencies here so opening the UI stays quick.
             import cv2
             import numpy as np
-            from eyetrax import GazeEstimator
+            from head_tracking import HeadAwareEstimator
 
             if self.isInterruptionRequested():
                 return
@@ -56,12 +57,13 @@ class CameraWorker(QThread):
             cap.set(cv2.CAP_PROP_FPS, 30)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             # EyeTrax downloads its landmark model on first use; no frames are uploaded.
-            estimator = GazeEstimator()
+            estimator = HeadAwareEstimator()
             if self.isInterruptionRequested():
                 return
             self.ready.emit()
             is_trained = False
             preview_at = 0.0
+            blink_filter = BlinkFilter()
             while not self.isInterruptionRequested():
                 frame_started = time.monotonic()
                 with self._train_lock:
@@ -97,7 +99,8 @@ class CameraWorker(QThread):
                         rgb.data, width, height, rgb.strides[0], QImage.Format.Format_RGB888
                     ).copy()
                     preview_at = now + 0.1
-                self.sample.emit(features, preview, bool(blink))
+                blink = blink_filter.update(features is not None, bool(blink), now)
+                self.sample.emit(features, preview, blink)
                 point = None
                 if is_trained and features is not None and not blink:
                     xy = estimator.predict([features])[0]

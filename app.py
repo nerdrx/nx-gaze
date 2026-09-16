@@ -12,10 +12,15 @@ if sys.platform.startswith('linux') and os.environ.get('DISPLAY'):
     os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QRadialGradient, QShortcut, QKeySequence
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QRadialGradient, QShortcut, QKeySequence, QPolygonF
 from PyQt6.QtWidgets import QApplication, QWidget
 from core import Display, Smoother, signature, targets, visible_display
 from ui import ControlPanel
+from head_tracking import FEATURE_SCHEMA
+
+SETTLE_SECONDS = .65
+CAPTURE_SECONDS = .55
+MIN_TARGET_SAMPLES = 6
 
 
 class GazeOverlay(QWidget):
@@ -28,6 +33,7 @@ class GazeOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setGeometry(screen.geometry())
         self.point, self.radius = None, 30
+        self.color, self.shape, self.opacity = '#7700ff', 'ring', 80
 
     def paintEvent(self, event):
         if self.point is None:
@@ -35,19 +41,43 @@ class GazeOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         point = QPointF(self.point[0] - self.x(), self.point[1] - self.y())
-        gradient = QRadialGradient(point, self.radius)
-        gradient.setColorAt(0, QColor(119, 0, 255, 65))
-        gradient.setColorAt(.75, QColor(119, 0, 255, 24))
-        gradient.setColorAt(1, QColor(119, 0, 255, 0))
-        painter.setBrush(gradient)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(point, self.radius, self.radius)
+        painter.setOpacity(self.opacity / 100)
+        color = QColor(self.color)
+        if self.shape in ('ring', 'dot'):
+            gradient = QRadialGradient(point, self.radius)
+            core, edge = QColor(color), QColor(color)
+            core.setAlpha(90)
+            edge.setAlpha(0)
+            gradient.setColorAt(0, core)
+            gradient.setColorAt(1, edge)
+            painter.setBrush(gradient)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(point, self.radius, self.radius)
+        # Keep opacity a cap rather than accumulating glow and marker alpha.
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor('#a566ff'), 2))
-        painter.drawEllipse(point, self.radius * .62, self.radius * .62)
-        painter.setBrush(QColor('#efeaff'))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(point, 3, 3)
+        painter.setPen(QPen(color, max(1.5, min(4, self.radius / 12))))
+        r = self.radius * .62
+        if self.shape == 'ring':
+            painter.drawEllipse(point, r, r)
+        elif self.shape == 'dot':
+            painter.setBrush(color)
+            painter.drawEllipse(point, r, r)
+        elif self.shape == 'crosshair':
+            gap = r * .25
+            painter.drawLine(QPointF(point.x()-r, point.y()), QPointF(point.x()-gap, point.y()))
+            painter.drawLine(QPointF(point.x()+gap, point.y()), QPointF(point.x()+r, point.y()))
+            painter.drawLine(QPointF(point.x(), point.y()-r), QPointF(point.x(), point.y()-gap))
+            painter.drawLine(QPointF(point.x(), point.y()+gap), QPointF(point.x(), point.y()+r))
+        elif self.shape == 'diamond':
+            painter.drawPolygon(QPolygonF([QPointF(point.x(), point.y()-r),
+                QPointF(point.x()+r, point.y()), QPointF(point.x(), point.y()+r),
+                QPointF(point.x()-r, point.y())]))
+        if self.shape != 'dot':
+            painter.setBrush(color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(point, min(3, self.radius*.2), min(3, self.radius*.2))
+
 
 
 class CalibrationWindow(QWidget):
@@ -103,9 +133,13 @@ class Controller:
         self.paused = False
         self.panel.pause_button.setText('Pause overlay')
         self.closing = False
-        self.radius, self.smoothing = 30, .6
+        self.radius = self.panel.radius_slider.value()
+        self.smoothing = self.panel.smoothing_slider.value() / 100
+        self.color, self.shape, self.opacity = self.panel.current_style()
         self.smoother = Smoother()
         self.last_sample = 0
+        self.blink_since = None
+        self.blink_hold = False
         self.cal_windows = []
         self.cal_targets = []
         self.samples, self.labels = [], []
@@ -124,6 +158,7 @@ class Controller:
         self.panel.preview_requested.connect(self.set_preview)
         self.panel.camera_changed.connect(self.change_camera)
         self.panel.appearance_changed.connect(self.appearance)
+        self.panel.style_changed.connect(self.style)
         QShortcut(QKeySequence('Escape'), self.panel, activated=self.cancel_calibration)
         app.screenAdded.connect(self.layout_changed)
         app.screenRemoved.connect(self.layout_changed)
@@ -157,6 +192,15 @@ class Controller:
 
     def appearance(self, radius, smoothing):
         self.radius, self.smoothing = radius, smoothing
+        for overlay in self.overlays:
+            overlay.radius = radius
+            overlay.update()
+
+    def style(self, color, shape, opacity):
+        self.color, self.shape, self.opacity = color, shape, opacity
+        for overlay in self.overlays:
+            overlay.color, overlay.shape, overlay.opacity = color, shape, opacity
+            overlay.update()
 
     def set_preview(self, enabled):
         self.preview = enabled
@@ -193,13 +237,14 @@ class Controller:
         if not self.worker or self.worker.isInterruptionRequested() or self.closing:
             return
         self.camera_ready = True
-        self.panel.set_status('Camera ready', 'Calibrate all screens while sitting comfortably.')
+        self.panel.set_status('Camera ready', 'Quick calibration takes about 7 seconds per screen. Sit naturally.')
         if self.profile.exists():
             try:
                 import numpy as np
                 with np.load(self.profile, allow_pickle=False) as data:
                     meta = json.loads(str(data['metadata']))
                     if meta != self.metadata():
+                        self.panel.set_status('Quick calibration needed', 'Head compensation needs a fresh calibration. About 7 seconds per screen.')
                         return
                     x, y = data['features'].copy(), data['targets'].copy()
                     if x.ndim != 2 or y.shape != (len(x), 2) or len(x) < 9 or not np.isfinite(x).all() or not np.isfinite(y).all():
@@ -211,7 +256,7 @@ class Controller:
 
     def metadata(self):
         device = Path(f'/sys/class/video4linux/video{self.camera_index}/device')
-        return {'version': 1, 'eyetrax': '0.4.0', 'camera': self.camera_index,
+        return {'version': 2, 'features': FEATURE_SCHEMA, 'eyetrax': '0.4.0', 'camera': self.camera_index,
                 'device': str(device.resolve()), 'displays': signature(self.displays)}
 
     def stop_camera(self):
@@ -260,10 +305,23 @@ class Controller:
         self.last_sample = time.monotonic()
         if preview is not None:
             self.panel.set_preview(preview)
-        if features is None or blink:
+        if features is None:
+            self.blink_since = None
+            self.blink_hold = False
             self.hide_gaze()
             return
-        if self.phase and self.cal_targets and time.monotonic() - self.target_since >= 1.4:
+        if blink:
+            if self.blink_since is None:
+                self.blink_since = self.last_sample
+            self.blink_hold = self.last_sample - self.blink_since < .4
+            if not self.blink_hold:
+                self.hide_gaze()
+            elif self.smoother.point is not None:
+                self.smoother.time = self.last_sample
+            return
+        self.blink_since = None
+        self.blink_hold = False
+        if self.phase and self.cal_targets and time.monotonic() - self.target_since >= SETTLE_SECONDS:
             if self.phase == 'collect':
                 self.samples.append(features.copy())
                 self.labels.append(self.cal_targets[self.target_index][1:])
@@ -271,9 +329,11 @@ class Controller:
 
     def prediction(self, point):
         self.last_prediction = point
-        if self.phase == 'validate' and point is not None and time.monotonic() - self.target_since >= 1.4:
+        if self.phase == 'validate' and point is not None and time.monotonic() - self.target_since >= SETTLE_SECONDS:
             import math
             self.target_errors.append(math.dist(self.cal_targets[self.target_index][1:], point))
+        if point is None and self.blink_hold and self.calibrated and not self.paused and not self.phase:
+            return
         if not self.calibrated or self.paused or self.phase or point is None:
             self.hide_gaze()
             return
@@ -285,6 +345,7 @@ class Controller:
         for index, overlay in enumerate(self.overlays):
             if index == screen:
                 overlay.point, overlay.radius = point, self.radius
+                overlay.color, overlay.shape, overlay.opacity = self.color, self.shape, self.opacity
                 overlay.show()
                 overlay.update()
             else:
@@ -317,7 +378,7 @@ class Controller:
         for i, window in enumerate(self.cal_windows):
             window.target = (x, y) if i == active else None
             window.title = ('Look at the violet dot' if i == active else f'Look at display {active + 1}')
-            window.subtitle = f'{"Check" if self.phase == "validate" else "Point"} {self.target_index+1} of {len(self.cal_targets)} · Keep your normal posture'
+            window.subtitle = f'{"Check" if self.phase == "validate" else "Point"} {self.target_index+1} of {len(self.cal_targets)} · Keep your eyes on the dot; sit naturally'
             window.show()
             window.update()
         self.cal_windows[active].activateWindow()
@@ -337,7 +398,7 @@ class Controller:
             self.cancel_calibration()
             self.panel.set_status('Could not track this target', 'Improve lighting or camera angle, then try again.')
             return
-        if elapsed < 2.5 or count < 10:
+        if elapsed < SETTLE_SECONDS + CAPTURE_SECONDS or count < MIN_TARGET_SAMPLES:
             return
         if self.phase == 'validate':
             import statistics
@@ -360,7 +421,7 @@ class Controller:
             self.cancel_calibration()
             self.calibrated = True
             self.panel.set_calibrated(True)
-            self.panel.set_status('Calibration checked', 'Median target error (logical pixels) · ' + ' / '.join(results) + self.save_error)
+            self.panel.set_status('Calibration checked', 'Quick spot-check error (logical pixels) · ' + ' / '.join(results) + self.save_error)
 
     def save_calibration(self):
         self.save_error = ''
@@ -386,7 +447,7 @@ class Controller:
             self.phase = 'validate'
             self.validation_errors = []
             self.cal_targets = [(i, *d.target(u, v)) for i, d in enumerate(self.displays)
-                                for u, v in [(.3, .3), (.7, .7), (.3, .7)]]
+                                for u, v in [(.3, .7)]]
             self.target_index = 0
             self.show_target()
         else:

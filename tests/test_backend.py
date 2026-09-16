@@ -86,7 +86,7 @@ class CameraWorkerTest(unittest.TestCase):
         worker.trained.connect(trained.append, direct)
         worker.ready.connect(lambda: ready.append(True), direct)
         with patch.dict(sys.modules, {
-            'cv2': cv2, 'eyetrax': SimpleNamespace(GazeEstimator=lambda: estimator),
+            'cv2': cv2, 'head_tracking': SimpleNamespace(HeadAwareEstimator=lambda: estimator),
         }):
             worker.start()
             finished = worker.wait(5000)
